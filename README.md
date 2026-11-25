@@ -38,7 +38,7 @@ The model plans; rules decide.
    - **Core journeys.** The model plans the app's most important paths (for a shop: add an item, check out, see the confirmation) from `main` alone, without seeing the PR. Each journey is proven on `main` first. If one fails there, the model gets one chance to correct its own check from what the screen showed. Journeys are planned once per `main` commit, so every PR is held to the same bar.
    - **Checks for the change.** The model reads the diff and checks what the PR adds or changes.
 4. **The model can only use a tiny step vocabulary:** go to a page, tap, type, press, expect text. It never writes code that runs. Unknown steps are dropped.
-5. **Failures are kept.** A failing PR machine (or a machine with a reproduced bug) is checkpointed and left running for 24 hours, so you can open the broken app or get a shell on it.
+5. **Failures are kept.** A failing PR machine (or a machine with a reproduced bug) is checkpointed and left running (24 hours by default, `PG_KEEP_HOURS` to change it), so you can open the broken app or get a shell on it.
 
 ## Safe by design
 
@@ -52,7 +52,7 @@ GitHub ──(connector)──► shubu-polygraph (control: watches repos, plans
           ┌───────────────────┼─────────────────────┐
           ▼                   ▼                     ▼
    pg-…-main (main)    pg-…-<sha> (the PR)    pg-browser (Playwright)
-   no keys, deleted    no keys, kept 24 h     no keys
+   no keys, deleted    no keys, kept         no keys
                        if it fails
 ```
 
@@ -70,7 +70,17 @@ GitHub ──(connector)──► shubu-polygraph (control: watches repos, plans
 2. Optional: in GitHub branch protection, make the **Polygraph** status check required, so a red verdict blocks the merge.
 3. Open a PR, or label an issue `bug`.
 
-Today it supports Node.js web apps that start with `npm start` (or `node server.js`) and read `PORT`.
+Today it supports Node.js web apps that start with `npm start` (or `node server.js`). If the app ignores `PORT` and hard-codes its own port, Polygraph finds the port it opened. Native modules (like `sqlite3`) build, because install scripts are allowed on the throwaway machines. If the app won't start even on `main`, Polygraph says "couldn't test" instead of guessing.
+
+Tested on real open-source apps as well as the demo shop:
+
+| App | PR | Unit tests | Polygraph |
+|---|---|---|---|
+| [heroku/node-js-getting-started](https://github.com/sksenapati007/node-js-getting-started/pull/1) (Express, EJS) | Adds a Times page whose route calls a missing helper | ✅ 2 passed | ❌ "Times link leads to 500 error on both desktop and mobile" |
+| [socketio/chat-example](https://github.com/sksenapati007/chat-example/pull/1) (Socket.IO, SQLite, hard-coded ports) | Stores message times, but the SQL has 3 columns and 2 values | none | ❌ "Messages never appear when sent via button or Enter key on any device" |
+| [socketio/chat-example](https://github.com/sksenapati007/chat-example/pull/2) | Adds a placeholder and label to the message box | none | ✅ Safe to merge |
+| [polygraph-demo-shop](https://github.com/sksenapati007/polygraph-demo-shop/pull/2) | Adds a promo banner that covers Checkout on phones | ✅ 4 passed | ❌ "Checkout button covered" |
+| [polygraph-demo-shop](https://github.com/sksenapati007/polygraph-demo-shop/pull/3) | Fixes the double-add bug | ✅ 5 passed | ✅ Safe to merge |
 
 ## Run your own
 

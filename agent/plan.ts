@@ -11,7 +11,7 @@ Steps (nothing else is allowed):
   {"do":"expectText","text":"<text that must become visible>"}
   {"do":"expectNoText","text":"<text that must NOT be visible>"}
   {"do":"wait","ms":500}
-Use the exact accessible names from CONTROLS and exact text from VISIBLE TEXT. Never invent products, buttons or fields that are not listed. Keep each check under 10 steps.
+Use the exact accessible names from CONTROLS and exact text from VISIBLE TEXT; a control without a name is targeted by its id, e.g. "#input". Never invent products, buttons or fields that are not listed. Keep each check under 10 steps.
 expectText must match text that will literally appear on the page (copy the formatting you see in the HTML and scripts, e.g. "2 × Karak chai", "AED 8").
 Check one fact per expectText. If you assert a total, work it out step by step from the prices on the page (price × quantity) and double-check it.`;
 
@@ -77,7 +77,7 @@ export async function headline(facts: string, fallback: string): Promise<string>
       `You write the one-line headline of a QA report for a busy developer. Plain text, no Markdown, no emoji, max 14 words.
 Say what is broken from the user's point of view (e.g. "Checkout button can't be tapped on phones"). Only use the facts given.`,
       facts,
-      200,
+      800, // reasoning models spend part of the budget thinking; 200 sometimes left nothing for the answer
     );
     const line = t.replace(/[*_#`]/g, "").split("\n").map((s) => s.trim()).find(Boolean) ?? "";
     return line.length > 8 && line.length < 140 ? line : fallback;

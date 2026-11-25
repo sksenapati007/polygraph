@@ -29,6 +29,7 @@ const job = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const out = job.outDir; fs.mkdirSync(out, { recursive: true });
 const VIEW = { mobile: { ...devices["iPhone 13"] }, desktop: { viewport: { width: 1280, height: 800 } } };
 function find(page, t) {
+  if (/^#[\w-]+$/.test(t)) return Promise.resolve(page.locator(t).first()); // unnamed controls, by id
   const tries = [page.getByRole("button", { name: t }), page.getByRole("link", { name: t }), page.getByLabel(t), page.getByText(t, { exact: false })];
   return (async () => { for (const l of tries) if (await l.count()) return l.first(); return tries[0].first(); })();
 }
@@ -100,7 +101,8 @@ async function step(page, s, base) {
       // What a user can operate, by accessible name: this is what the planner targets.
       const controls = await page.evaluate(() => [...document.querySelectorAll("button,a[href],input,select,textarea,[role=button]")].slice(0, 60).map((el) => {
         const name = el.getAttribute("aria-label") || (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute("placeholder") || el.innerText || el.getAttribute("name") || "";
-        return el.tagName.toLowerCase() + ": " + name.trim().replace(/\s+/g, " ").slice(0, 60) + (el.disabled ? " (disabled)" : "");
+        const label = name.trim().replace(/\s+/g, " ").slice(0, 60);
+        return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + ": " + (label || "(no name: target it as #" + (el.id || "?") + ")") + (el.disabled ? " (disabled)" : "");
       })).catch(() => []);
       results.push({ target, id: c.id, ok, failedStep, error, observed, controls, consoleErrors: consoleErrors.slice(0, 5), shot, ms: Date.now() - t0 });
       await ctx.close();

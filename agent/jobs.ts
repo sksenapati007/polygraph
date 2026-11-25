@@ -10,11 +10,12 @@ import { planForPR, planJourneys, repairJourney, planForIssue, headline } from "
 
 export const PUBLIC = process.env.PG_PUBLIC_URL ?? "http://localhost:8080";
 export const SHOTS = process.env.PG_SHOTS ?? "/home/sprite/polygraph/data/shots";
-const KEEP_HOURS = 24;
+const KEEP_HOURS = Number(process.env.PG_KEEP_HOURS ?? 24); // how long a failed machine is kept for debugging
+const KEPT = KEEP_HOURS >= 48 ? `${Math.round(KEEP_HOURS / 24)} days` : `${KEEP_HOURS} hours`;
 const JOURNEYS = new Map<string, Check[]>();
 
 export type Verdict = "running" | "pass" | "fail" | "reproduced" | "not-reproduced" | "inconclusive" | "error";
-export interface Finding { check: Check; main?: CheckResult; pr?: CheckResult; kind: "ok" | "regression" | "fixed" | "new" | "preexisting" | "reproduced" | "not-reproduced" | "unclear" }
+export interface Finding { check: Check; main?: CheckResult; pr?: CheckResult; kind: "ok" | "regression" | "fixed" | "new" | "broken" | "preexisting" | "reproduced" | "not-reproduced" | "unclear" }
 export interface Run {
   id: string; kind: "pr" | "issue"; repo: string; number: number; title: string; url: string; sha: string;
   startedAt: number; finishedAt?: number; verdict: Verdict; headline: string; expected?: string;
@@ -67,6 +68,10 @@ function sawText(c: Check, r: CheckResult): string {
   const hits = lines.filter((l) => words.some((w) => l.toLowerCase().includes(w)));
   return (hits.length ? hits : lines.slice(0, 4)).slice(0, 4).join(" / ").slice(0, 240);
 }
+
+/** A server error (5xx) or an uncaught JavaScript error: the code itself failed, not the check. */
+const isCrash = (m: string) => /^5\d\d from /.test(m) || m.startsWith("page error");
+const crashes = (r?: CheckResult) => !!r && r.consoleErrors.some(isCrash);
 
 /** A check's failure is solid evidence when it failed on an expectation or on a covered button. */
 const solid = (c: Check, r: CheckResult) => {
@@ -125,7 +130,18 @@ export async function checkPR(repo: string, pr: gh.PR, save: (r: Run) => void): 
   try {
     const [main, head] = await Promise.all([boot(repo, pr.base.sha, names.main), boot(repo, pr.head.sha, names.pr)]);
     run.tests = { main: main.tests, pr: head.tests };
-    say(`Machines ready. Unit tests: main ${main.tests.summary || (main.tests.passed ? "passed" : "failed")}, PR ${head.tests.summary || (head.tests.passed ? "passed" : "failed")}`);
+    const tw = (t: Machine["tests"]) => (!t.ran ? "none" : t.summary || (t.passed ? "passed" : "failed"));
+    say(`Machines ready. Unit tests: main ${tw(main.tests)}, PR ${tw(head.tests)}. App starts: main ${main.started ? "yes" : "no"}, PR ${head.started ? "yes" : "no"}`);
+    if (!main.started && !head.started) {
+      // Nothing to compare. Say so plainly; never call an untested PR safe.
+      run.verdict = "inconclusive";
+      run.headline = main.installed ? "Couldn't start the app on a fresh machine, so this PR is untested" : "Dependencies don't install on a fresh machine, so this PR is untested";
+      say(run.headline);
+      await gh.upsertComment(repo, pr.number, untestedComment(run, main));
+      await gh.setStatus(repo, pr.head.sha, "error", run.headline, page);
+      await notify(`⚠️ PR #${pr.number}: couldn't test`, run.headline, { url: page });
+      return run;
+    }
 
     const problems: string[] = [];
     if (!head.installed) problems.push("the PR's dependencies don't install");
@@ -159,14 +175,17 @@ export async function checkPR(repo: string, pr: gh.PR, save: (r: Run) => void): 
       for (const c of all) {
         const m = get(results, "main", c), p = get(results, "pr", c);
         const kind: Finding["kind"] =
-          m?.ok && p?.ok ? "ok" : m?.ok && !p?.ok ? "regression" : !m?.ok && p?.ok ? (c.id.startsWith("p") ? "new" : "fixed") : "preexisting";
+          m?.ok && p?.ok ? "ok" : m?.ok && !p?.ok ? "regression" : !m?.ok && p?.ok ? (c.id.startsWith("p") ? "new" : "fixed")
+          : crashes(p) && !crashes(m) ? "broken" : "preexisting";
         run.findings.push({ check: c, main: m, pr: p, kind });
       }
       for (const f of run.findings.filter((f) => f.kind === "regression")) problems.push(`${f.check.name} (${view(f.check)}): ${why(f.check, f.pr!)}`);
+      // A crash is evidence no matter what the check expected: the PR's own code errors where main's doesn't.
+      for (const f of run.findings.filter((f) => f.kind === "broken")) problems.push(`${f.check.name} (${view(f.check)}): the PR's code crashes: ${firstLine(f.pr!.consoleErrors.filter(isCrash).join("; "))}`);
     }
 
     run.verdict = problems.length ? "fail" : "pass";
-    const fallback = problems.length ? problems[0].split(":")[0] : "Safe to merge";
+    const fallback = problems.length ? `${problems[0].split(":")[0].replace(/ \((phone|desktop)\)$/, "")} no longer works with this PR` : "Safe to merge";
     run.headline = problems.length ? await headline(`PR: ${pr.title}\nProblems found (main branch is fine, this PR is not):\n- ${problems.join("\n- ")}`, fallback) : "Safe to merge";
     if (run.verdict === "fail" && head.started) { await keepMachine(run, head, `failure state of PR #${pr.number}`); keep = true; }
     say(run.verdict === "pass" ? "Verdict: safe to merge" : `Verdict: not ready (${problems.length} problem${problems.length > 1 ? "s" : ""})`);
@@ -188,6 +207,24 @@ export async function checkPR(repo: string, pr: gh.PR, save: (r: Run) => void): 
   return run;
 }
 
+function untestedComment(run: Run, m: Machine): string {
+  return [
+    `### ⚠️ Polygraph couldn't test this PR`,
+    ``,
+    `**${run.headline}.** It doesn't start on \`main\` either, so this isn't caused by the PR. Polygraph needs the app to start with \`npm start\` (or \`node server.js\`) on a fresh Linux machine.`,
+    ``,
+    `<details><summary>What the app printed</summary>`,
+    ``,
+    "```",
+    (m.appLog || m.log.join("\n")).slice(-2500),
+    "```",
+    ``,
+    `</details>`,
+    ``,
+    `<sub>Tested ${short(run.sha)} in throwaway [Fly.io Sprites](https://sprites.dev). [Full report](${PUBLIC}/runs/${run.id})</sub>`,
+  ].join("\n");
+}
+
 function prComment(run: Run, problems: string[]): string {
   const icon = (r?: CheckResult, f?: Finding) => (!r ? "–" : f?.kind === "new" && r.target === "main" ? "➖" : r.ok ? "✅" : "❌");
   const t = run.tests;
@@ -200,13 +237,13 @@ function prComment(run: Run, problems: string[]): string {
   } else {
     out.push(`### ❌ Polygraph: not ready to merge`, ``, `**${run.headline}**`, ``);
     for (const p of problems) out.push(`- ${p}`);
-    const reg = run.findings.find((f) => f.kind === "regression");
+    const reg = run.findings.find((f) => f.kind === "regression") ?? run.findings.find((f) => f.kind === "broken");
     if (reg) {
       out.push(``, `| main | this PR |`, `|---|---|`, `| <img src="${shotUrl(reg.main?.shot)}" width="260" alt="main"> | <img src="${shotUrl(reg.pr?.shot)}" width="260" alt="this PR"> |`);
       out.push(``, `<details><summary>Steps I took (${view(reg.check)})</summary>`, ``, ...steps(reg.check).map((s, i) => `${i + 1}. ${describeStep(s)}`), ``, `</details>`);
     }
     out.push(``, ...rows);
-    if (run.machine) out.push(``, `▶ **[Open the machine where it failed](${PUBLIC}/runs/${run.id})**: the PR is still running there, frozen at the failure (snapshot \`${run.machine.checkpoint || "saved"}\`). Kept for ${KEEP_HOURS} hours.`);
+    if (run.machine) out.push(``, `▶ **[Open the machine where it failed](${PUBLIC}/runs/${run.id})**: the PR is still running there, frozen at the failure (snapshot \`${run.machine.checkpoint || "saved"}\`). Kept for ${KEPT}.`);
   }
   const fresh = run.findings.filter((f) => f.kind === "new");
   if (fresh.length) out.push(``, `<sub>Works with this PR (it didn't on main): ${fresh.map((f) => `${f.check.name} (${view(f.check)})`).join("; ")}.</sub>`);
@@ -279,7 +316,7 @@ function issueComment(run: Run): string {
     out.push(`On a fresh machine running \`${short(run.sha)}\` (${view(f.check)}), I did this twice and got the same result both times:`, ``, ...stepList, ``);
     out.push(`- **Expected:** ${run.expected || describeStep(steps(f.check)[f.main.failedStep ?? 0])}`, `- **Actually:** ${why(f.check, f.main)}`, `- **On screen:** ${sawText(f.check, f.main)}`, ``);
     out.push(`<img src="${shotUrl(f.main.shot)}" width="320" alt="What the page showed">`, ``);
-    if (run.machine) out.push(`▶ **[Open the machine where it happens](${PUBLIC}/runs/${run.id})**: the bug is live there right now (snapshot \`${run.machine.checkpoint || "saved"}\`). Kept for ${KEEP_HOURS} hours.`);
+    if (run.machine) out.push(`▶ **[Open the machine where it happens](${PUBLIC}/runs/${run.id})**: the bug is live there right now (snapshot \`${run.machine.checkpoint || "saved"}\`). Kept for ${KEPT}.`);
   } else if (run.verdict === "not-reproduced") {
     out.push(`### 🤔 Polygraph couldn't reproduce this yet`, ``, `On a fresh machine running \`${short(run.sha)}\`, I tried:`, ``, ...stepList, ``, `Everything worked as expected. Could you add the exact steps, or the device and browser you used? I'll try again as soon as this issue is edited.`);
   } else {

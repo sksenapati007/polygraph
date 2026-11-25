@@ -49,7 +49,7 @@ async function tick() {
         state.seen[key] = (await reproduceIssue(repo, issue, save)).id; persist();
       }
     }
-    // Machines kept for debugging are deleted after 24 hours.
+    // Machines kept for debugging are deleted once they expire (PG_KEEP_HOURS, default 24).
     for (const r of state.runs) if (r.machine && r.machine.expiresAt < Date.now()) { await destroy(r.machine.sprite); r.machine = undefined; persist(); }
   } catch (e) {
     console.error("poll:", (e as Error).message);
@@ -64,7 +64,7 @@ setTimeout(tick, 2000);
 
 const LABEL: Record<Run["verdict"], [string, string]> = {
   running: ["Testing…", "warn"], pass: ["Safe to merge", "ok"], fail: ["Not ready", "bad"],
-  reproduced: ["Bug reproduced", "bad"], "not-reproduced": ["Couldn't reproduce", "warn"], inconclusive: ["Not sure yet", "warn"], error: ["Error", "warn"],
+  reproduced: ["Bug reproduced", "bad"], "not-reproduced": ["Couldn't reproduce", "warn"], inconclusive: ["Couldn't test", "warn"], error: ["Error", "warn"],
 };
 const ago = (t: number) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
 
@@ -111,7 +111,7 @@ function runPage(r: Run): string {
     .map((x) => `<figure><img src="/shots/${esc(x.s)}" alt="${esc(x.cap)}" loading="lazy"><figcaption>${esc(x.cap)}</figcaption></figure>`).join("");
   const machine = r.machine
     ? `<section aria-labelledby="m"><h2 id="m">The machine where it ${r.kind === "pr" ? "failed" : "happens"}</h2>
-<p>Still running, exactly as it was when the problem showed up. Snapshot <code>${esc(r.machine.checkpoint || "saved")}</code> can bring it back to this moment. It is deleted in about ${Math.max(1, Math.round((r.machine.expiresAt - Date.now()) / 3600_000))} hours.</p>
+<p>Still running, exactly as it was when the problem showed up. Snapshot <code>${esc(r.machine.checkpoint || "saved")}</code> can bring it back to this moment. It is deleted in about ${((h) => (h >= 48 ? `${Math.round(h / 24)} days` : `${h} hours`))(Math.max(1, Math.round((r.machine.expiresAt - Date.now()) / 3600_000)))}.</p>
 <p><a class="button" href="${esc(r.machine.url)}" target="_blank" rel="noopener">Open the broken app</a></p>
 <p class="muted">Shell access for the repo owner: <code>sprite console -s ${esc(r.machine.sprite)}</code></p></section>` : "";
   return page(`${t}: ${r.title}`, `${CSS}

@@ -10,6 +10,7 @@ export interface Machine {
   installed: boolean;
   tests: { ran: boolean; passed: boolean; summary: string; tail: string };
   started: boolean;
+  appLog: string; // the app's last output lines, when it would not start
   log: string[];
 }
 
@@ -27,7 +28,7 @@ export async function destroy(sprite: string) {
 }
 
 export async function boot(repo: string, sha: string, sprite: string): Promise<Machine> {
-  const m: Machine = { sprite, url: "", installed: false, tests: { ran: false, passed: false, summary: "", tail: "" }, started: false, log: [] };
+  const m: Machine = { sprite, url: "", installed: false, tests: { ran: false, passed: false, summary: "", tail: "" }, started: false, appLog: "", log: [] };
   const say = (s: string) => { m.log.push(s); console.log(`[${sprite}] ${s}`); };
 
   await destroy(sprite);
@@ -41,7 +42,9 @@ export async function boot(repo: string, sha: string, sprite: string): Promise<M
   const pkg = JSON.parse((await sprites.readFile(sprite, "/home/sprite/app/package.json")) ?? "{}");
   const hasDeps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).length > 0;
   if (hasDeps) {
-    const inst = await sprites.run(sprite, "cd ~/app && (npm ci || npm install) 2>&1 | tail -20", 300_000);
+    // Install scripts (native modules like sqlite3) are allowed: this machine holds no keys and is thrown away.
+    const npm = "--dangerously-allow-all-scripts --no-audit --no-fund";
+    const inst = await sprites.run(sprite, `set -o pipefail; cd ~/app && (npm ci ${npm} || npm install ${npm}) 2>&1 | tail -20`, 300_000);
     if (inst.code !== 0) { say(`install failed: ${tail(inst.out, 8)}`); return m; }
   }
   m.installed = true;
@@ -54,14 +57,50 @@ export async function boot(repo: string, sha: string, sprite: string): Promise<M
   }
 
   const start = pkg.scripts?.start ? "npm start" : `node ${pkg.main ?? "server.js"}`;
-  await sprites.putServiceFull(sprite, "app", { cmd: "bash", args: ["-lc", `cd ~/app && ${start}`], env: { PORT: "8080" }, dir: "/home/sprite/app", http_port: 8080 });
-  for (let i = 0; i < 30; i++) {
+  const svc = (port: number) => sprites.putServiceFull(sprite, "app", { cmd: "bash", args: ["-lc", `cd ~/app && ${start}`], env: { PORT: "8080" }, dir: "/home/sprite/app", http_port: port });
+  await svc(8080);
+  m.started = await answers(m.url, 10);
+  if (!m.started) {
+    // Many apps hard-code their port instead of reading PORT. Find the one it actually opened.
+    const port = await detectPort(sprite);
+    if (port) {
+      say(`app ignores PORT and listens on ${port}; pointing the machine's URL there`);
+      await sprites.deleteService(sprite, "app");
+      await svc(port);
+      m.started = await answers(m.url, 15);
+    }
+  }
+  if (!m.started) m.appLog = tail((await sprites.run(sprite, "tail -n 25 /.sprite/logs/services/app.log 2>/dev/null | cut -c26-", 30_000)).out, 25);
+  say(m.started ? "app is up" : "app did not start");
+  return m;
+}
+
+async function answers(url: string, tries: number): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
     try {
-      const r = await fetch(m.url, { signal: AbortSignal.timeout(5000) });
-      if (r.status < 500) { m.started = true; break; }
+      const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (r.status < 500) return true;
     } catch { /* still booting */ }
     await new Promise((r) => setTimeout(r, 2000));
   }
-  say(m.started ? "app is up" : "app did not start");
-  return m;
+  return false;
+}
+
+/** The lowest TCP port the app is listening on that answers HTTP, read from /proc/net (no tools needed). */
+async function detectPort(sprite: string): Promise<number | null> {
+  // Python reads the kernel's socket table, so no extra tools are needed on the machine.
+  const py = [
+    "import glob",
+    "ports = set()",
+    "for f in glob.glob('/proc/net/tcp*'):",
+    "    for l in open(f).readlines()[1:]:",
+    "        p = l.split()",
+    "        if p[3] == '0A': ports.add(int(p[1].rsplit(':', 1)[1], 16))",
+    "for x in sorted(ports):",
+    "    if x >= 1024 and x != 8080: print(x)",
+  ].join("\n");
+  await sprites.writeFile(sprite, "/var/tmp/pg-ports.py", py);
+  const r = await sprites.run(sprite, `for p in $(python3 /var/tmp/pg-ports.py); do c=$(curl -s -o /dev/null -m 3 -w '%{http_code}' localhost:$p/); if [ "$c" != 000 ] && [ "$c" -lt 500 ]; then echo $p; break; fi; done`, 60_000);
+  const port = Number(r.out.trim().split("\n")[0]);
+  return Number.isInteger(port) && port > 0 ? port : null;
 }
