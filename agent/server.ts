@@ -2,7 +2,8 @@
 // in throwaway Sprites, then tells you in plain English what it found.
 import http from "node:http";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createReadStream } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { attachShell, shellPage } from "./shell.ts";
 import { page, esc } from "../core/html.ts";
 import * as gh from "./github.ts";
 import { destroy } from "./machine.ts";
@@ -12,6 +13,14 @@ const DATA = process.env.PG_DATA ?? "/home/sprite/polygraph/data";
 const PIN = process.env.PG_PIN ?? "";
 const POLL_MS = Number(process.env.PG_POLL_MS ?? 20_000);
 const PORT = Number(process.env.PORT ?? 8080);
+const SECRET = process.env.PG_COOKIE_SECRET ?? randomBytes(32).toString("hex");
+const authCookie = createHmac("sha256", SECRET).update("shell").digest("hex");
+function authorized(req: http.IncomingMessage) {
+  const got = /(?:^|;\s*)pg_auth=([a-f0-9]{64})/.exec(req.headers.cookie ?? "")?.[1];
+  return !!got && timingSafeEqual(Buffer.from(got), Buffer.from(authCookie));
+}
+/** The kept machine for a run, if it still exists. */
+const machineFor = (id: string) => { const r = state.runs.find((x) => x.id === id); return r?.machine && r.machine.expiresAt > Date.now() ? r.machine.sprite : null; };
 mkdirSync(SHOTS, { recursive: true });
 
 interface State { repos: string[]; seen: Record<string, string>; runs: Run[] }
@@ -113,7 +122,7 @@ function runPage(r: Run): string {
     ? `<section aria-labelledby="m"><h2 id="m">The machine where it ${r.kind === "pr" ? "failed" : "happens"}</h2>
 <p>Still running, exactly as it was when the problem showed up. Snapshot <code>${esc(r.machine.checkpoint || "saved")}</code> can bring it back to this moment. It is deleted in about ${((h) => (h >= 48 ? `${Math.round(h / 24)} days` : `${h} hours`))(Math.max(1, Math.round((r.machine.expiresAt - Date.now()) / 3600_000)))}.</p>
 <p><a class="button" href="${esc(r.machine.url)}" target="_blank" rel="noopener">Open the broken app</a></p>
-<p class="muted">Shell access for the repo owner: <code>sprite console -s ${esc(r.machine.sprite)}</code></p></section>` : "";
+<p><a class="button" href="/runs/${r.id}/shell">Open a shell on this machine</a> <span class="muted">(repo owner, PIN needed)</span></p></section>` : "";
   return page(`${t}: ${r.title}`, `${CSS}
 <p><a href="/">← Polygraph</a></p>
 <h1><span class="badge ${c}">${t}</span> ${r.kind === "pr" ? "PR" : "Bug"} #${r.number}</h1>
@@ -131,11 +140,26 @@ function form(req: http.IncomingMessage): Promise<URLSearchParams> {
   return new Promise((ok) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => ok(new URLSearchParams(b))); });
 }
 
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
   const send = (code: number, body: string, type = "text/html; charset=utf-8") => { res.writeHead(code, { "content-type": type }); res.end(body); };
   try {
     if (req.method === "GET" && url.pathname === "/") return send(200, home());
+    const sh = /^\/runs\/(\w+)\/shell$/.exec(url.pathname);
+    if (sh) {
+      const r = state.runs.find((x) => x.id === sh[1]);
+      if (!r || !machineFor(r.id)) return send(404, page("Gone", `<h1>That machine is gone</h1><p>Kept machines are deleted after a while. <a href="/">Back</a></p>`));
+      if (req.method === "POST") {
+        const f = await form(req);
+        if (!PIN || f.get("pin") !== PIN) return send(403, page("Wrong PIN", `<h1>Wrong PIN</h1><p><a href="/runs/${r.id}/shell">Try again</a></p>`));
+        res.writeHead(303, { location: `/runs/${r.id}/shell`, "set-cookie": `pg_auth=${authCookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400` });
+        return res.end();
+      }
+      if (!authorized(req)) return send(200, page("Open a shell", `${CSS}<p><a href="/runs/${r.id}">← Back to the report</a></p><h1>Open a shell on the machine</h1>
+<p>This is the machine where ${r.kind === "pr" ? `PR #${r.number} failed` : `bug #${r.number} happens`}. The app is still running on it. Shells are for the repo owner.</p>
+<form method="post" class="row"><div><label for="pin">PIN</label><input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" required autofocus></div><div><button type="submit">Open shell</button></div></form>`));
+      return send(200, shellPage(`Shell: ${esc(r.machine!.sprite)}`, `/runs/${r.id}`));
+    }
     if (req.method === "GET" && url.pathname.startsWith("/runs/")) {
       const r = state.runs.find((x) => x.id === url.pathname.slice(6));
       return r ? send(200, runPage(r)) : send(404, page("Not found", "<h1>Not found</h1>"));
@@ -162,4 +186,6 @@ http.createServer(async (req, res) => {
   } catch (e) {
     send(500, page("Error", `<h1>Something went wrong</h1><pre>${esc((e as Error).message)}</pre><p><a href="/">Back</a></p>`));
   }
-}).listen(PORT, () => console.log(`polygraph on :${PORT}, public URL ${PUBLIC}, watching ${state.repos.join(", ") || "nothing"}`));
+});
+attachShell(server, { authorized, machineFor });
+server.listen(PORT, () => console.log(`polygraph on :${PORT}, public URL ${PUBLIC}, watching ${state.repos.join(", ") || "nothing"}`));

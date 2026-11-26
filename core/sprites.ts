@@ -16,9 +16,26 @@ async function call(method: string, path: string, opts: { json?: unknown; raw?: 
   let body: BodyInit | undefined;
   if (opts.json !== undefined) { headers["content-type"] = "application/json"; body = JSON.stringify(opts.json); }
   else if (opts.raw !== undefined) { headers["content-type"] = "application/octet-stream"; body = new Uint8Array(opts.raw); }
-  const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000) });
-  if (!res.ok && res.status !== 204) throw new Error(`${method} ${path} → ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  return res;
+  // A Sprite created a moment ago can answer 502/503 while it boots. Retry those (and dropped connections)
+  // with backoff, except for POSTs, which may not be safe to repeat.
+  const attempts = method === "POST" ? 1 : 5;
+  for (let i = 1; ; i++) {
+    let res: Response;
+    try {
+      res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000) });
+    } catch (e) {
+      if (i >= attempts) throw e;
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** (i - 1)));
+      continue;
+    }
+    if ([502, 503, 504].includes(res.status) && i < attempts) {
+      await res.text().catch(() => "");
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** (i - 1)));
+      continue;
+    }
+    if (!res.ok && res.status !== 204) throw new Error(`${method} ${path} → ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return res;
+  }
 }
 
 export const createSprite = async (name: string, isPublic: boolean) =>

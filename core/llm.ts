@@ -53,7 +53,18 @@ export function ask(system: string, user: string, maxTokens = 1500): Promise<str
 }
 
 export async function askJson<T>(system: string, user: string, maxTokens = 1500): Promise<T> {
-  const raw = await complete(`${system}\nRespond with a single JSON object only. No prose.`, user, true, maxTokens);
-  const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
-  return JSON.parse(cleaned) as T;
+  // Reasoning models spend part of the budget thinking, so a tight budget can cut the JSON off mid-way.
+  // Ask with a roomy budget, and if the JSON still doesn't parse, ask once more with double.
+  let budget = Math.max(maxTokens, 3000);
+  for (let attempt = 1; ; attempt++) {
+    const raw = await complete(`${system}\nRespond with a single JSON object only. No prose.`, user, true, budget);
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+    const start = cleaned.indexOf("{"), end = cleaned.lastIndexOf("}");
+    try {
+      return JSON.parse(start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned) as T;
+    } catch (e) {
+      if (attempt >= 2) throw new Error(`the model's answer wasn't valid JSON twice: ${(e as Error).message}`);
+      budget *= 2;
+    }
+  }
 }

@@ -1,0 +1,9 @@
+{
+  "name": "polygraph",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

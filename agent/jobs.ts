@@ -12,7 +12,7 @@ export const PUBLIC = process.env.PG_PUBLIC_URL ?? "http://localhost:8080";
 export const SHOTS = process.env.PG_SHOTS ?? "/home/sprite/polygraph/data/shots";
 const KEEP_HOURS = Number(process.env.PG_KEEP_HOURS ?? 24); // how long a failed machine is kept for debugging
 const KEPT = KEEP_HOURS >= 48 ? `${Math.round(KEEP_HOURS / 24)} days` : `${KEEP_HOURS} hours`;
-const JOURNEYS = new Map<string, Check[]>();
+export const JOURNEYS = new Map<string, Check[]>(); // exported so tests can force a re-plan
 
 export type Verdict = "running" | "pass" | "fail" | "reproduced" | "not-reproduced" | "inconclusive" | "error";
 export interface Finding { check: Check; main?: CheckResult; pr?: CheckResult; kind: "ok" | "regression" | "fixed" | "new" | "broken" | "preexisting" | "reproduced" | "not-reproduced" | "unclear" }

@@ -38,7 +38,7 @@ The model plans; rules decide.
    - **Core journeys.** The model plans the app's most important paths (for a shop: add an item, check out, see the confirmation) from `main` alone, without seeing the PR. Each journey is proven on `main` first. If one fails there, the model gets one chance to correct its own check from what the screen showed. Journeys are planned once per `main` commit, so every PR is held to the same bar.
    - **Checks for the change.** The model reads the diff and checks what the PR adds or changes.
 4. **The model can only use a tiny step vocabulary:** go to a page, tap, type, press, expect text. It never writes code that runs. Unknown steps are dropped.
-5. **Failures are kept.** A failing PR machine (or a machine with a reproduced bug) is checkpointed and left running (24 hours by default, `PG_KEEP_HOURS` to change it), so you can open the broken app or get a shell on it.
+5. **Failures are kept.** A failing PR machine (or a machine with a reproduced bug) is checkpointed and left running (24 hours by default, `PG_KEEP_HOURS` to change it). From the report you can open the broken app, or open a shell on the machine in your browser (PIN needed). The shell goes through the Sprites exec API from the control Sprite, so nothing is installed on the broken machine and the app keeps running.
 
 ## Safe by design
 
@@ -82,11 +82,13 @@ Tested on real open-source apps as well as the demo shop:
 | [polygraph-demo-shop](https://github.com/sksenapati007/polygraph-demo-shop/pull/2) | Adds a promo banner that covers Checkout on phones | ✅ 4 passed | ❌ "Checkout button covered" |
 | [polygraph-demo-shop](https://github.com/sksenapati007/polygraph-demo-shop/pull/3) | Fixes the double-add bug | ✅ 5 passed | ✅ Safe to merge |
 
+**Stable:** all six cases (the five PRs above plus [bug report #1](https://github.com/sksenapati007/polygraph-demo-shop/issues/1)) were run three times each, with the core journeys re-planned from scratch every round: 18 of 18 verdicts correct. A bug report takes about 35 seconds, a PR 1 to 3.5 minutes. `tools/stability.ts` repeats the test.
+
 ## Run your own
 
 You need two Sprites connectors (GitHub and Ollama) whose policy admits only your control Sprite, plus a Sprites API token.
 
-1. Create a control Sprite (e.g. `shubu-polygraph`), store the token at `~/.config/hg/sprites-token` (mode 0600), and copy this repo to `~/polygraph`.
+1. Create a control Sprite (e.g. `shubu-polygraph`), store the token at `~/.config/hg/sprites-token` (mode 0600), and copy this repo to `~/polygraph` and run `npm install` there.
 2. Create a keyless browser Sprite named `pg-browser` and install Playwright there: `npm i playwright && npx playwright install --with-deps chromium` in `~/pw`.
 3. Start the agent as a Sprite service on port 8080 with these environment variables: `PG_PUBLIC_URL` (the control Sprite's URL), `PG_REPOS` (comma-separated `owner/name`), `PG_PIN`, `HG_LLM=cloud`, and optionally `HG_NTFY_TOPIC` for phone notifications through [ntfy](https://ntfy.sh). `tools/start.ts` does this for you, reading the settings from `~/.config/hg/polygraph.env.json` so they never land in the repo.
 
@@ -99,13 +101,14 @@ agent/plan.ts      prompts: core journeys, checks for a PR, bug steps, self-repa
 agent/browser.ts   the step vocabulary and the Playwright runner (incl. the tap test)
 agent/machine.ts   boots a commit on a fresh, keyless Sprite: install, unit tests, start
 agent/github.ts    GitHub through the connector: PRs, issues, diffs, tarballs, statuses, comments
+agent/shell.ts     browser shell on a kept machine, through the Sprites exec API
 core/              Sprites API client, connector gateway, LLM, ntfy, page shell
-tools/             start the service, open demo PRs, commit through the connector
+tools/             start the service, open demo PRs, the stability test, commit through the connector
 ```
 
 ## Open source stack
 
-Node.js 24 (TypeScript, no build step) · [Playwright](https://playwright.dev) (Apache-2.0) · [Ollama](https://ollama.com) with open-weight models · [ntfy](https://ntfy.sh) for phone notifications.
+Node.js 24 (TypeScript, no build step) · [ws](https://github.com/websockets/ws) (MIT) · [xterm.js](https://xtermjs.org) (MIT) for the browser shell · [Playwright](https://playwright.dev) (Apache-2.0) · [Ollama](https://ollama.com) with open-weight models · [ntfy](https://ntfy.sh) for phone notifications.
 
 ## License
 
