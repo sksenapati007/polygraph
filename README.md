@@ -27,6 +27,32 @@ All 4 unit tests passed on that PR. Plain CI would have said green.
 
 If it can't reproduce the bug, it says so and asks for the missing detail.
 
+## Screenshots
+
+**A PR that passes its unit tests but breaks checkout on phones.** Polygraph's comment, with `main` beside the PR:
+
+![Polygraph comment on a PR: not ready to merge](docs/screenshots/pr-fail.png)
+
+**A bug report, reproduced twice on a fresh machine:**
+
+![Polygraph comment on an issue: bug reproduced](docs/screenshots/issue.png)
+
+**The run report** (desktop and phone): verdict first, then the machine where it failed, the evidence, and every check.
+
+<p><img src="docs/screenshots/report.png" alt="Run report on desktop" width="68%"> <img src="docs/screenshots/report-phone.png" alt="Run report on a phone" width="28%"></p>
+
+**A shell on the machine where it failed**, in the browser (PIN needed). Here it shows the culprit: a banner fixed to the bottom of the screen at 40% of a phone's height.
+
+![Browser shell on the failed machine](docs/screenshots/shell.png)
+
+**A PR that's fine gets a green check and a short comment:**
+
+![Polygraph comment on a PR: safe to merge](docs/screenshots/pr-pass.png)
+
+**The agent page:**
+
+![Polygraph agent page](docs/screenshots/agent.png)
+
 ## How it decides
 
 The model plans; rules decide.
